@@ -1,0 +1,369 @@
+// Client-side UDP Code - Lab 5 
+// Written by Ifeanyi Ibeanusi <iibeanus@villanova.edu>
+// Adapted for use from "Beej's Guide to Network Programming" (C) 2017
+
+
+#include <stdio.h>		// Std i/o libraries - obviously
+#include <stdlib.h>		// Std C library for utility fns & NULL defn
+#include <unistd.h>		// System calls, also declares STDOUT_FILENO
+#include <errno.h>	    	// Pre-defined C error codes (in Linux)
+#include <string.h>		// String operations - surely, you know this!
+#include <sys/types.h>  	// Defns of system data types
+#include <sys/socket.h> 	// Unix Socket libraries for TCP, UDP, etc.
+#include <netinet/in.h> 	// INET constants
+#include <arpa/inet.h>  	// Conversion of IP addresses, etc.
+#include <netdb.h>		// Network database operations, incl. getaddrinfo
+#include <ctype.h>		// For converting string from upper to lowercase
+
+// Our constants ..
+#define MAXBUF 10000     // Max buffer size for i/o over nwk
+#define SRVR_PORT "6666"  // the server's port# to which we send data
+						  // NOTE: ports 0 -1023 are reserved for superuser!
+
+// Checksum function
+uint16_t chksum(uint16_t *buf, int count) 
+
+{
+	register uint32_t sum = 0;//0; // initialization of the sum
+	
+	while (count) // While the count is not 0; count decrements by 2: Goes through each 2 byte word
+	
+	{
+		sum += *buf++;
+		if (sum & 0xFFFF0000) // if sum greater than 16 bits
+		{
+			/* carry occured so wrap around */
+			sum &= 0xFFFF; 
+			sum++;
+		}
+		count -= 2;
+	}
+	
+	return ~(sum & 0xFFFF); // collects the ones complement of the result
+	
+}
+
+int main(int argc, char *argv[]) {
+	int count1 = 0;
+	int checkMatch = 1; // pretend checkMatch is 1 (so the two checksums don't match)
+	while(count1 < 2 && checkMatch){
+		
+		int sockfd;			 // Socket file descriptor; much like a file descriptor
+		struct addrinfo hints, *servinfo, *p; // Address structure and ptrs to them
+		
+		int rv, nbytes, nread;
+		char sizep[5];	// Array holding the size of the file as a string with a '\0' attached to the end
+		char payloadsz[4];	// Array for the size of each packet: buf[0-3] of other packets
+		char buf[MAXBUF];    // Size of our network app i/o buffer
+		
+		if (argc != 3) {
+		    fprintf(stderr,"ERROR! Correct Usage is: ./program_name server userid\n"
+				    "Where,\n    server = server_name or ip_address, and\n"
+				    "    userid = your LDAP (VU) userid\n");
+		    exit(1);
+		}
+
+		// First, we need to fill out some fields of the 'hints' struct
+		memset(&hints, 0, sizeof hints); // fill zeroes in the hints struc
+		hints.ai_family = AF_UNSPEC;     // AF_UNSPEC means IPv4 or IPv6; don't care
+		hints.ai_socktype = SOCK_DGRAM;  // SOCK_DGRAM means UDP
+
+		// Then, we call getaddrinfo() to fill out other fields of the struct 'hints
+		// automagically for us; servinfo will now point to the addrinfo structure
+		// of course, if getaddrinfo() fails to execute correctly, it will report an
+		// error in the return value (rv). rv=0 implies no error. If we do get an
+		// error, then the function gai_strerror() will print it out for us
+		if ((rv = getaddrinfo(argv[1], SRVR_PORT, &hints, &servinfo)) != 0) {
+		    fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
+		    return 1;
+		}
+
+		// We start by pointing p to wherever servinfo is pointing; this could be
+		// the very start of a linked list of addrinfo structs. So, try every one of
+		// them, and open a socket with the very first one that allows us to
+		// Note that if a socket() call fails (i.e. if it returns -1), we continue
+		// to try opening a socket by advancing to the next node of the list
+		// by means of the stmt: p = p->ai_next (ai_next is the next ptr, defined in
+		// struct addrinfo).
+		for(p = servinfo; p != NULL; p = p->ai_next) {
+		    if ((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1) {
+		        perror("CLIENT: socket");
+		        continue;
+		    }
+
+		    break;
+		}
+
+		// OK, keep calm - if p==NULL, then it means that we cycled through whole
+		// linked list, but did not manage to open a socket! We have failed, and
+		// with a deep hearted sigh, accept defeat; with our tail between our legs,
+		// we terminate our program here with error code 2 (from main).
+		if (p == NULL) {
+		    fprintf(stderr, "CLIENT: failed to create socket\n");
+		    return 2;
+		}
+
+		// If p!=NULL, then things are looking up; the OS has opened a socket for
+		// us and given us a socket descriptor. We are cleared to send! Hurray!
+		// The sendto() function will report how many bytes (nbytes) it sent; but a
+		// negative value (-1) means failure to send. Sighhh. If nbytes is +ve,
+		// don't rejoice yet; it is still possible for the packet to be lost/damaged
+		// in transit - we won't know anything about this. This is UDP after all!
+		if ((nbytes = sendto(sockfd, argv[2], strlen(argv[2]), 0,
+		         p->ai_addr, p->ai_addrlen)) == -1) {
+		    perror("CLIENT: sendto");
+		    exit(1);
+		}
+
+		//printf("CLIENT: sent '%s' (%d bytes) to %s\n\n", argv[2], nbytes, argv[1]);
+
+		// Recv packet from server. You should modify this part of the program so that
+		// you can receive more than 1 packet from the server. In fact, you should
+		// call recvfrom() repeatedly till all parts of the file have been received.
+		// Each time you call recvfrom(), buf will be loaded with new incoming data;
+		// since the old contents of buf will be overwritten, you must save those
+		// contents elsewhere before calling recvfrom().
+
+		
+		nread = recvfrom(sockfd,buf,MAXBUF,0,NULL,NULL);
+		if (nread<0) {
+				perror("CLIENT: Problem in recvfrom");
+				exit(1);
+		}
+		// we recvd our very first packet from sender: <filesize,filename>
+		//printf("Received %d bytes\n\n",nread);
+		// Output recvd data to stdout; 
+		if (write(STDOUT_FILENO,buf,nread) < 0) {
+		  	perror("CLIENT: Problem writing to stdout");
+			exit(1);
+		}
+		// Actuall checksum of filestream
+		char bufchecksum1[5]; // store the char array for checksum from buf[4..7]
+		for(int ch = 0; ch < 4; ++ch){
+			bufchecksum1[ch] = buf[ch+4];
+		}
+		bufchecksum1[4] = '\0';
+		printf("\n\nActual checksum is: %s\n", bufchecksum1);
+		
+
+		// For loop to find size of the file. This is done by storing buf[0-3] tp sizep[0-3]
+		// and placing '\0' on the last index of sizep: sizep[4]
+		// Use atoi(sizep) to change the string array into an int and store in sizeoffile
+		for(int a = 0; a < 4; ++a){
+			sizep[a] = buf[a];
+		}
+		sizep[4] = '\0';
+		int sizeoffile = atoi(sizep);
+		//printf("\nThe sizeoffile variable now holds: %d \n", sizeoffile); // DEBUG: print out the size of the file 
+
+		
+		int numberofpackets = sizeoffile/100 + 1; // the total number of packets in the stream
+		//printf("The numberofpackets variable now holds: %i \n", numberofpackets);
+		char tempbuf1d[MAXBUF]; // 1D array to hold the packets in order
+		
+		int linef; // linef is the decrementer that reduces based off the size of each packet recieved
+		char packetnumber[3]; // This stores the packet number of each packet as a string:
+		int sizeofpacket, intpacketnumber; // sizeofpacket is buf[0-3] for first  packet
+
+
+		
+		// For loop to go through each packet and store in tempbuf1d
+		
+		for(linef = sizeoffile; linef != 0;){ // while linef is the size of the file and is not 0
+
+			nread = recvfrom(sockfd,buf,MAXBUF,0,NULL,NULL); // receive the packet
+			
+			for(int p = 0; p < 3; ++p){ // find the size of the data packet buf[3-5]
+				payloadsz[p] = buf[p+3];
+				}
+			payloadsz[3] = '\0';
+			sizeofpacket = atoi(payloadsz); // sizeofpacket is int of payloadsz
+			//printf("\n(DEBUG) The size of this packet is: %d \n", sizeofpacket); // DEBUG: print sizeofpacket
+			
+			
+			// order the packet based off of the packetnumber
+			for(int l = 0; l < 2; l++){
+				packetnumber[l] = buf[l]; //store the packet# in packetnumber[l] array
+				}
+			
+			packetnumber[2] = '\0';
+
+			intpacketnumber = atoi(packetnumber);
+			//printf("\n(DEBUG) The sequence number is (intpacketnumber): %d \n", intpacketnumber);
+
+			
+			memcpy((tempbuf1d+(intpacketnumber*100)), buf+6, sizeofpacket);// tempbuf1d for getting checksum
+			//printf("\n(DEBUG) data directly from buf: %s \n", (buf+6)+'\0');
+			//printf("\n(DEBUG) tempbuf1d array output:\n %s \n", tempbuf1d);
+			
+			linef -= sizeofpacket; // Decrement linef based off of the size of the packet
+			//printf("(DEBUG) value of linef: %d \n", linef);
+		}
+
+
+		// AFTER all packets have been received ....
+		// free up the linked-list memory that was allocated for us so graciously by
+		// getaddrinfo() above; and close the socket as well - otherwise, bad things
+		// could happen
+		freeaddrinfo(servinfo);
+		close(sockfd);
+
+		// char array to store the buf data from tempbuf1d
+		char buf1[MAXBUF];
+		memcpy(buf1, tempbuf1d, sizeoffile);
+
+		// int array to convert buf1 into uint16_t
+		uint16_t uinttempbuf[MAXBUF];
+		
+
+		printf("\n\nImplementing checksum: \n");
+		
+		int sz = sizeoffile;
+		//printf("\n\nPacket's data is: %s\n", buf1);
+		printf("\nsize of string (non padded) : %i\n", sz); // last string output (size of content)
+
+		
+		
+		if(sz % 2){ 
+		// if sz odd concatenate '\0'at end of row of tempbuf
+			buf1[sz] = '\0';
+			sz++; // Size of buf increased by 1
+		}
+		
+		printf("size of string (padded) : %i\n", sz); // last string output (size of content) with added null
+
+		memcpy(uinttempbuf, buf1, sz); // copy into uint16_t uinttempbuf
+		
+		uint16_t checksum2 = chksum(uinttempbuf, sz);
+		printf("\n\nActual checksum is: \n");
+		printf("%s\n", bufchecksum1);
+		printf("\nComputed checksum is: \n");
+		printf("%x (in hexadecimal)\n", checksum2); // checksum as a hex
+		printf("%i (in decimal)\n", checksum2); // checksum as an int
+		
+
+
+
+		// Convert the bufchecksum1 to lower char to compare with checksum2
+		// size of bufchecksum1 is 5
+		int lenbufchecksum1 = 5; // should be 5
+		//printf("(DEBUG) Length of bufchecksum1 = %d\n", lenbufchecksum1);
+		char *lowerbufchecksum1 = calloc(lenbufchecksum1+1, sizeof(char));
+
+		//printf("(DEBUG) bufchecksum1 = %s\n", bufchecksum1);
+		
+
+		for (int i = 0; i < lenbufchecksum1; ++i){
+			lowerbufchecksum1[i] = tolower(bufchecksum1[i]);
+			//printf("(DEBUG) bufchecksum1[%i]: %c \n", i, bufchecksum1[i]);
+			//printf("(DEBUG) lowerbufchecksum1[%i]: %c \n", i, lowerbufchecksum1[i]);
+		}
+		//printf("lowerbufchecksum1 value is: %s\n", lowerbufchecksum1);
+		// Converted buf to lower
+
+		// use sprintf to store the checksum2 computed
+		char strchecksum2[5];
+		sprintf(strchecksum2, "%.4x", checksum2);
+		//printf("(DEBUG) strchecksum2 value is: %s\n", strchecksum2);
+
+		// check that the contents of lowerbufchecksum1[i] = strchecksum2[i]
+		// Make into function
+		checkMatch = checksumequal(strchecksum2, lowerbufchecksum1);
+
+		// For writing to file or scanf
+		//checkMatch = 0 if they do match, 1 if they don't
+		count1 = casecheckMatch(checkMatch, count1); 
+		printf("(DEBUG) count1: %i\n", count1);
+		if (count1!= 3){
+			writetofile(checkMatch, sizeoffile, tempbuf1d);
+		}
+		
+		
+		printf("\n\n"); // So that the new terminal prompt starts two lines below
+	}
+	if(count1 == 2 && checkMatch){
+		printf("Checksum doesn't match twice (count1 = %i). Terminating program! \n", count1);
+	}
+	if(count1 == 3){
+		printf("Closing program (count1 = %i)\n", count1);
+	}
+    return 0;
+}
+
+// Function to check if the checksums are equal
+int checksumequal(char *checksum2, char *checksum1){
+	printf("\nChecking if the checksums equal: \n\n");
+
+	int checkMatch = 0; // check if the two checksums match 0 if they match 1 if they don't match
+	for(int i = 0; i < 4; ++i){
+		if(checksum1[i] != checksum2[i]){
+			//printf("Value of (computed checksum) strchecksum2: %s \n", checksum2);
+			//printf("Does not equal value of lowerbufchecksum1: %s \n", checksum1);
+			checkMatch = 1; // make 1 as they don't match
+		}
+		else printf("strchecksum2[%i]: %c == lowerbufchecksum1[%i]: %c\n", i, checksum2[i], i, checksum1[i]);
+	}
+	return checkMatch;
+}
+
+// Function for case user input
+int casecheckMatch(int checkMatch, int count1){
+	if(checkMatch){ // checksums don't match so scanf
+		printf("\nChecksum is wrong, would you like to send another request? [Y/N] \n");
+		// make switch statement into function
+		char input;
+		scanf(" %c", &input);
+		while((getchar())!='\n');
+		//printf("input is: %c \n",input);
+		
+		
+		switch(input){
+			case 'Y':
+				//when input is Yes request for packet again and do whole process again.
+				//Call main again in main and reduce argc
+				printf("input = %c, resending...\n", input);
+				count1 += 1;
+				printf("(DEBUG) ('Y') count1 is: %i \n", count1);
+				return count1;
+				break;
+			case 'N':
+				// End program
+				printf("input = %c, closing program...\n", input);
+				count1 = 3; // exit program
+				printf("(DEBUG) ('N') count1 is: %i \n", count1);
+				return count1;
+				break;
+			default:
+				printf("input: %c, please only input Y or N uppercase :)\n", input);
+				printf("(DEBUG) ('default') count1 is: %i \n", count1);
+				casecheckMatch (checkMatch, count1);
+				
+				break;
+		}
+		
+	}
+	return 0;
+}
+int writetofile(int checkMatch, int sizeoffile, char* tempbuf1d){
+	char FILEPATH[100];
+	char FILENAME[100];
+	strcpy(FILEPATH, "/home/ifeanyi/ECE_4470_ComputerNetworks/Lab5/Lab2/data_files/");
+	strcpy(FILENAME, "TheRoadNotTaken.txt");
+	strcat( FILEPATH, FILENAME); // concatenate the filepath and filename
+	FILE *fp;
+
+	fp = fopen(FILEPATH, "w+"); // Read the file
+
+	if(fp == NULL){ // check if file opened
+		perror("Error in opening file");
+		return -1;
+	}
+	
+	if (checkMatch == 0){
+	fwrite(tempbuf1d, 1, sizeoffile, fp);
+	printf("\nWrote to file!");
+	}
+
+	fclose(fp);
+
+}
